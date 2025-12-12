@@ -4,8 +4,7 @@ FROM golang:1.25-alpine AS builder
 ARG PROTOC_GEN_GO_VERSION=1.36.11
 ARG PROTOC_GEN_GO_GRPC_VERSION=1.6.0
 
-RUN apk add --no-cache ca-certificates git tzdata build-base upx protobuf-dev && \
-    adduser -D -g '' builder
+RUN apk add --no-cache ca-certificates git tzdata build-base upx protobuf-dev
 
 ENV GOBIN=/usr/local/bin \
     PATH=/usr/local/bin:${PATH}
