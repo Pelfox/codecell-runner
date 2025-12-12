@@ -20,7 +20,12 @@ RUN mkdir -p generated
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    protoc --go_out=generated --go-grpc_out=generated protocol/runner.proto
+    protoc --proto_path=protocol \
+      --go_out=generated \
+      --go_opt=paths=source_relative \
+      --go-grpc_out=generated \
+      --go-grpc_opt=paths=source_relative \
+      protocol/runner.proto
 
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN --mount=type=cache,target=/root/.cache/go-build \
