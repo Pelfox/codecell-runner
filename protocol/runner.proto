@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package runner.v1;
+option go_package = "github.com/Pelfox/codecell-runner/api/runner/v1";
+
+// RunnerService defines the gRPC service for running code snippets.
+service RunnerService {
+  // Run executes the provided source code in the specified language.
+  rpc Run(RunRequest) returns (stream RunResponseMessage);
+
+  // Stop terminates a running code execution identified by request_id.
+  rpc Stop(StopRequest) returns (StopResponse);
+}
+
+// RunRequest contains the details needed to execute a code snippet.
+message RunRequest {
+  // The source code to be executed.
+  string source_code = 1;
+  // The programming language of the source code (must be supported).
+  string language = 2;
+  // Maximum execution time in seconds.
+  int32 timeout_seconds = 3;
+  // Standard input lines to be provided to the code during execution.
+  repeated string stdin = 4;
+}
+
+// MessageLevel indicates the type of message being sent in RunResponseMessage.
+enum MessageLevel {
+  STDOUT = 0;
+  STDERR = 1;
+  EXIT_CODE = 2;
+  INFO = 3;
+  ERROR = 4;
+}
+
+// RunResponseMessage represents a message sent back during code execution.
+message RunResponseMessage {
+  // The unique identifier for the run request.
+  string request_id = 1;
+  // The level/type of the message.
+  MessageLevel level = 2;
+  // The content of the message.
+  string message = 3;
+}
+
+// StopRequest is used to request termination of a running code execution.
+message StopRequest {
+  // The unique identifier of the run request to be stopped.
+  string request_id = 1;
+  // Whether to forcefully terminate the execution.
+  bool force = 2;
+}
+
+// StopResponse indicates the result of a stop request.
+message StopResponse {}
