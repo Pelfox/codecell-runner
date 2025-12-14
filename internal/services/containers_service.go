@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/Pelfox/codecell-runner/internal/executor"
+	"github.com/docker/go-units"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
@@ -47,6 +48,8 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 		}
 	}
 
+	initValue := true      // enabling init process in the container
+	pidsLimit := int64(64) // limiting the number of processes to 64
 	containerOptions := client.ContainerCreateOptions{
 		Config: &container.Config{
 			User:         "runner", // running as non-root
@@ -62,11 +65,30 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 			AttachStdin: true,
 		},
 		HostConfig: &container.HostConfig{
+			Init:           &initValue,
+			ReadonlyRootfs: true, // making root filesystem read-only
+			Tmpfs: map[string]string{
+				"/tmp": "rw,noexec,nosuid,size=64m",
+			},
 			Binds: []string{
 				fmt.Sprintf("%s:/workspace:rw", workspaceDir), // TODO: mount a temporary FS and switch to RO
 			},
 			// NetworkMode: "none", // TODO: disable network to prevent attacks
-			AutoRemove: false,
+			AutoRemove: true,
+			CapDrop:    []string{"ALL"}, // dropping all capabilities for security
+			SecurityOpt: []string{
+				"no-new-privileges", // preventing privilege escalation
+				"seccomp=default",   // applying default seccomp profile
+			},
+			Resources: container.Resources{
+				Memory:     512 * 1024 * 1024, // limit memory to 512MB
+				MemorySwap: 0,                 // disable swap
+				NanoCPUs:   1_000_000_000,     // allow only 1 CPU
+				PidsLimit:  &pidsLimit,
+				Ulimits: []*units.Ulimit{
+					{Name: "nofile", Soft: 1024, Hard: 1024},
+				},
+			},
 		},
 		Image: technology.GetImage(),
 	}
@@ -82,7 +104,6 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 // StartContainer start the container with the given ID. It must be run after
 // the container is created, and after LogsService is attached to it.
 func (s *ContainersService) StartContainer(containerID string) error {
-	// TODO: killing for a long-running containers
 	_, err := s.dockerClient.ContainerStart(context.Background(), containerID, client.ContainerStartOptions{})
 	return err
 }
