@@ -3,8 +3,6 @@ package services
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 
 	"github.com/Pelfox/codecell-runner/internal/executor"
 	"github.com/docker/go-units"
@@ -35,19 +33,6 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 		return "", errors.New("the specified language is not supported")
 	}
 
-	// creating a temporary directory for the container workspace
-	workspaceDir, err := os.MkdirTemp("", "codecell-workspace-")
-	if err != nil {
-		return "", errors.New("failed to create temporary workspace directory")
-	}
-
-	// synchronously applying all technology's steps
-	for _, step := range technology.GetSteps() {
-		if err := step(workspaceDir, sourceCode); err != nil {
-			return "", err
-		}
-	}
-
 	initValue := true      // enabling init process in the container
 	pidsLimit := int64(64) // limiting the number of processes to 64
 	containerOptions := client.ContainerCreateOptions{
@@ -55,40 +40,69 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 			User:         "runner", // running as non-root
 			AttachStdout: true,
 			AttachStderr: true,
-			// Env:             nil, // TODO: fill environment variables, if needed
+			Env: []string{
+				"HOME=/tmp",
+				"TZ=Europe/Moscow",
+			},
 			Cmd:        technology.GetCommand(),
 			WorkingDir: "/workspace",
-
+			Volumes: map[string]struct{}{
+				"/workspace": {},
+			},
+			NetworkDisabled: true,
 			// opening and attaching STDIN, to write input from the user
 			OpenStdin:   true,
 			StdinOnce:   true,
 			AttachStdin: true,
 		},
 		HostConfig: &container.HostConfig{
+			IpcMode:        "none",
 			Init:           &initValue,
 			ReadonlyRootfs: true, // making root filesystem read-only
 			Tmpfs: map[string]string{
 				"/tmp": "rw,noexec,nosuid,size=64m",
 			},
-			Binds: []string{
-				fmt.Sprintf("%s:/workspace:rw", workspaceDir), // TODO: mount a temporary FS and switch to RO
-			},
-			// NetworkMode: "none", // TODO: disable network to prevent attacks
-			AutoRemove: true,
-			CapDrop:    []string{"ALL"}, // dropping all capabilities for security
+			NetworkMode: "none", // TODO: disable network to prevent attacks
+			AutoRemove:  true,
+			CapDrop:     []string{"ALL"}, // dropping all capabilities for security
 			SecurityOpt: []string{
 				"no-new-privileges", // preventing privilege escalation
-				"seccomp=default",   // applying default seccomp profile
+			},
+			MaskedPaths: []string{
+				"/proc/acpi",
+				"/proc/kcore",
+				"/proc/keys",
+				"/proc/latency_stats",
+				"/proc/timer_list",
+				"/proc/timer_stats",
+				"/proc/sched_debug",
+				"/proc/scsi",
+				"/sys/firmware",
+				"/sys/kernel/debug",
+				"/sys/kernel/tracing",
+			},
+			ReadonlyPaths: []string{
+				"/proc/asound",
+				"/proc/bus",
+				"/proc/fs",
+				"/proc/irq",
+				"/proc/sys",
+				"/proc/sysrq-trigger",
 			},
 			Resources: container.Resources{
 				Memory:     512 * 1024 * 1024, // limit memory to 512MB
-				MemorySwap: 0,                 // disable swap
+				MemorySwap: 512 * 1024 * 1024, // disable swap
 				NanoCPUs:   1_000_000_000,     // allow only 1 CPU
 				PidsLimit:  &pidsLimit,
 				Ulimits: []*units.Ulimit{
 					{Name: "nofile", Soft: 1024, Hard: 1024},
+					{Name: "fsize", Soft: 100 * 1024 * 1024, Hard: 100 * 1024 * 1024}, // Limit file size to 100MB
 				},
 			},
+			StorageOpt: map[string]string{
+				"size": "512M",
+			},
+			// TODO: use "Kata Containers" or "gVisor" for better isolation
 		},
 		Image: technology.GetImage(),
 	}
@@ -98,7 +112,18 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 		return "", err
 	}
 
-	return result.ID, nil
+	workspaceReader, err := technology.WriteSourceCode(sourceCode)
+	if err != nil {
+		return "", err
+	}
+
+	copyOptions := client.CopyToContainerOptions{
+		DestinationPath: "/workspace",
+		Content:         workspaceReader,
+	}
+	_, err = s.dockerClient.CopyToContainer(context.Background(), result.ID, copyOptions)
+
+	return result.ID, err
 }
 
 // StartContainer start the container with the given ID. It must be run after

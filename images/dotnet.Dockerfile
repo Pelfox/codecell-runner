@@ -10,6 +10,8 @@ RUN addgroup -S runner && adduser -S runner -G runner
 
 WORKDIR /workspace
 
+RUN chown runner:runner /workspace
+
 # Create a dummy project to warm NuGet cache
 RUN dotnet new console -n Warmup -f net10.0 && \
     cd Warmup && \

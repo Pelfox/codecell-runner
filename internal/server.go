@@ -140,7 +140,18 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 			})
 		}
 	}
-	// FIXME: close STDIN after writing all lines, to signal EOF to the container
+
+	// try to close the stdin; hack is to close only the write part of the connection
+	if closer, ok := stdin.(interface{ CloseWrite() error }); ok {
+		if err := closer.CloseWrite(); err != nil {
+			log.Error().Str("requestID", requestID.String()).
+				Err(err).
+				Msg("failed to close the container stdin")
+		}
+	}
+
+	// FIXME: allow only up to 100 KB of logs to be sent back to the client
+	// FIXME: don't ignore `error` on stream.Send.
 
 	// waiting for the container to finish execution
 	statusChannel, errorChannel := s.containersService.WaitForContainer(ctx, containerID)
@@ -159,6 +170,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 				Level:     v1.MessageLevel_ERROR,
 				Message:   "Execution timed out",
 			})
+			return ctx.Err()
 
 		// relay all logs from the stdout channel
 		case msg, ok := <-stdoutChannel:

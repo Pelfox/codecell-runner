@@ -1,9 +1,9 @@
 package executor
 
-type PrepareStep func(workspaceDir string, sourceCode string) error
+import "io"
 
 type Technology interface {
 	GetImage() string
 	GetCommand() []string
-	GetSteps() []PrepareStep
+	WriteSourceCode(sourceCode string) (io.Reader, error)
 }
