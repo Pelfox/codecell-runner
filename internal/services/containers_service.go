@@ -2,12 +2,14 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/Pelfox/codecell-runner/internal/executor"
 	"github.com/docker/go-units"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog/log"
 )
 
 // imagesMapping maps supported programming languages to their corresponding executor technologies.
@@ -42,7 +44,7 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 			AttachStderr: true,
 			Env: []string{
 				"HOME=/tmp",
-				"TZ=Europe/Moscow",
+				// TODO: pass more environment variables from the settings
 			},
 			Cmd:        technology.GetCommand(),
 			WorkingDir: "/workspace",
@@ -62,7 +64,7 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 			Tmpfs: map[string]string{
 				"/tmp": "rw,noexec,nosuid,size=64m",
 			},
-			NetworkMode: "none", // TODO: disable network to prevent attacks
+			NetworkMode: "none",
 			AutoRemove:  true,
 			CapDrop:     []string{"ALL"}, // dropping all capabilities for security
 			SecurityOpt: []string{
@@ -160,4 +162,40 @@ func (s *ContainersService) KillContainer(containerID string) error {
 func (s *ContainersService) RemoveContainer(containerID string) error {
 	_, err := s.dockerClient.ContainerRemove(context.Background(), containerID, client.ContainerRemoveOptions{})
 	return err
+}
+
+// StreamContainerStatistics opens the new stream with statistics of the
+// container and writes them into a channel as a parsed struct.
+func (s *ContainersService) StreamContainerStatistics(
+	ctx context.Context,
+	containerID string,
+) (<-chan container.StatsResponse, error) {
+	statsOptions := client.ContainerStatsOptions{
+		Stream:                true,
+		IncludePreviousSample: true,
+	}
+
+	result, err := s.dockerClient.ContainerStats(ctx, containerID, statsOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	decoder := json.NewDecoder(result.Body)
+	statsChannel := make(chan container.StatsResponse)
+
+	go func() {
+		defer close(statsChannel)
+		defer result.Body.Close()
+
+		for {
+			var stats container.StatsResponse
+			if err := decoder.Decode(&stats); err != nil {
+				log.Error().Err(err).Msg("failed to decode stats")
+				return
+			}
+			statsChannel <- stats
+		}
+	}()
+
+	return statsChannel, nil
 }

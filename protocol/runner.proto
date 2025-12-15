@@ -31,6 +31,15 @@ enum MessageLevel {
   EXIT_CODE = 2;
   INFO = 3;
   ERROR = 4;
+  STATISTICS = 5;
+}
+
+// StatisticsMessage represents resource usage statistics during code execution.
+message StatisticsMessage {
+  // Memory used in bytes.
+  uint64 memory_used = 1;
+  // CPU usage percentage.
+  float cpu_percent = 2;
 }
 
 // RunResponseMessage represents a message sent back during code execution.
@@ -40,7 +49,14 @@ message RunResponseMessage {
   // The level/type of the message.
   MessageLevel level = 2;
   // The content of the message.
-  string message = 3;
+  oneof payload {
+    // Standard output or error message.
+    string message = 3;
+    // Exit code of the executed program.
+    int64 exit_code = 4;
+    // Resource usage statistics.
+    StatisticsMessage statistics = 5;
+  }
 }
 
 // StopRequest is used to request termination of a running code execution.

@@ -41,21 +41,31 @@ func NewRunnerServer(containersService *services.ContainersService, logsService 
 }
 
 func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingServer[v1.RunResponseMessage]) error {
+	requestID := uuid.New()
+	// top-level function for writing messages with the string (human-readable) payload
+	writeMessage := func(level v1.MessageLevel, message string) error {
+		err := stream.Send(&v1.RunResponseMessage{
+			RequestId: requestID.String(),
+			Level:     level,
+			Payload:   &v1.RunResponseMessage_Message{Message: message},
+		})
+		if err != nil {
+			log.Error().Str("requestID", requestID.String()).
+				Err(err).
+				Msg("failed to send message to the stream")
+			return err
+		}
+		return nil
+	}
+
 	timeout := time.Duration(request.TimeoutSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(stream.Context(), timeout)
 	defer cancel()
 
-	requestID := uuid.New()
-	if err := stream.Send(&v1.RunResponseMessage{
-		RequestId: requestID.String(),
-		Level:     v1.MessageLevel_INFO,
-		Message:   "Starting up the container...",
-	}); err != nil {
+	if err := writeMessage(v1.MessageLevel_INFO, "Starting up container..."); err != nil {
 		return err
 	}
-	log.Info().Str("requestID", requestID.String()).
-		Interface("request", request).
-		Msg("starting up the container for request")
+	log.Info().Str("requestID", requestID.String()).Msg("starting up container for request")
 
 	defer func() {
 		s.mutex.Lock()
@@ -81,11 +91,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 		log.Error().Str("requestID", requestID.String()).
 			Err(err).
 			Msg("failed to create the container")
-		return stream.Send(&v1.RunResponseMessage{
-			RequestId: requestID.String(),
-			Level:     v1.MessageLevel_ERROR,
-			Message:   "Failed to create the container: " + err.Error(),
-		})
+		return writeMessage(v1.MessageLevel_ERROR, fmt.Sprintf("Failed to create container: %v", err))
 	}
 
 	// storing the container ID, as well as cancel function for timeout handling
@@ -94,11 +100,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 	s.cancels[requestID.String()] = cancel
 	s.mutex.Unlock()
 
-	if err := stream.Send(&v1.RunResponseMessage{
-		RequestId: requestID.String(),
-		Level:     v1.MessageLevel_INFO,
-		Message:   "Runner container is created",
-	}); err != nil {
+	if err := writeMessage(v1.MessageLevel_INFO, "Execution container is created."); err != nil {
 		return err
 	}
 
@@ -108,11 +110,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 		log.Error().Str("requestID", requestID.String()).
 			Err(err).
 			Msg("failed to attach to the container logs")
-		return stream.Send(&v1.RunResponseMessage{
-			RequestId: requestID.String(),
-			Level:     v1.MessageLevel_ERROR,
-			Message:   "Failed to attach to the container logs: " + err.Error(),
-		})
+		return writeMessage(v1.MessageLevel_ERROR, "Failed to attach to the container.")
 	}
 
 	// starting the container execution
@@ -120,11 +118,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 		log.Error().Str("requestID", requestID.String()).
 			Err(err).
 			Msg("failed to start the container")
-		return stream.Send(&v1.RunResponseMessage{
-			RequestId: requestID.String(),
-			Level:     v1.MessageLevel_ERROR,
-			Message:   "Failed to start the container: " + err.Error(),
-		})
+		return writeMessage(v1.MessageLevel_ERROR, "Failed to start the container.")
 	}
 
 	// writing all provided STDIN request lines to the container
@@ -133,11 +127,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 			log.Error().Str("requestID", requestID.String()).
 				Err(err).
 				Msg("failed to write to the container stdin")
-			return stream.Send(&v1.RunResponseMessage{
-				RequestId: requestID.String(),
-				Level:     v1.MessageLevel_ERROR,
-				Message:   "Failed to write to the container stdin: " + err.Error(),
-			})
+			return writeMessage(v1.MessageLevel_ERROR, "Failed to write to the container stdin.")
 		}
 	}
 
@@ -150,8 +140,50 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 		}
 	}
 
+	// getting container statistics stream
+	statisticsChannel, err := s.containersService.StreamContainerStatistics(ctx, containerID)
+	if err != nil {
+		log.Error().Str("requestID", requestID.String()).
+			Err(err).
+			Msg("failed to stream container statistics")
+		return writeMessage(v1.MessageLevel_ERROR, "Failed to stream container statistics.")
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case stats, ok := <-statisticsChannel:
+				if !ok {
+					return
+				}
+
+				// calculate usage of the CPU
+				cpuDelta := float32(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+				systemDelta := float32(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
+				cpuUsagePercent := (cpuDelta / systemDelta) * float32(stats.CPUStats.OnlineCPUs) * 100.0
+
+				if err := stream.Send(&v1.RunResponseMessage{
+					RequestId: requestID.String(),
+					Level:     v1.MessageLevel_STATISTICS,
+					Payload: &v1.RunResponseMessage_Statistics{
+						Statistics: &v1.StatisticsMessage{
+							MemoryUsed: stats.MemoryStats.Usage,
+							CpuPercent: cpuUsagePercent,
+						},
+					},
+				}); err != nil {
+					log.Error().Str("requestID", requestID.String()).
+						Err(err).
+						Msg("failed to send statistics to the stream")
+				}
+			}
+		}
+	}()
+
 	// FIXME: allow only up to 100 KB of logs to be sent back to the client
-	// FIXME: don't ignore `error` on stream.Send.
 
 	// waiting for the container to finish execution
 	statusChannel, errorChannel := s.containersService.WaitForContainer(ctx, containerID)
@@ -165,11 +197,9 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 					Err(err).
 					Msg("failed to kill the container on timeout")
 			}
-			_ = stream.Send(&v1.RunResponseMessage{
-				RequestId: requestID.String(),
-				Level:     v1.MessageLevel_ERROR,
-				Message:   "Execution timed out",
-			})
+			if err := writeMessage(v1.MessageLevel_ERROR, "Execution timed out."); err != nil {
+				return err
+			}
 			return ctx.Err()
 
 		// relay all logs from the stdout channel
@@ -178,11 +208,9 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 				stdoutChannel = nil
 				continue
 			}
-			stream.Send(&v1.RunResponseMessage{
-				RequestId: requestID.String(),
-				Level:     v1.MessageLevel_STDOUT,
-				Message:   msg,
-			})
+			if err := writeMessage(v1.MessageLevel_STDOUT, msg); err != nil {
+				return err
+			}
 
 		// relay all logs from the stderr channel
 		case msg, ok := <-stderrChannel:
@@ -190,30 +218,31 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 				stderrChannel = nil
 				continue
 			}
-			stream.Send(&v1.RunResponseMessage{
-				RequestId: requestID.String(),
-				Level:     v1.MessageLevel_STDERR,
-				Message:   msg,
-			})
+			if err := writeMessage(v1.MessageLevel_STDERR, msg); err != nil {
+				return err
+			}
 
 		// handle container execution errors
 		case err := <-errorChannel:
 			if err != nil {
-				stream.Send(&v1.RunResponseMessage{
-					RequestId: requestID.String(),
-					Level:     v1.MessageLevel_ERROR,
-					Message:   err.Error(),
-				})
+				if err := writeMessage(v1.MessageLevel_ERROR, err.Error()); err != nil {
+					return err
+				}
 				return err
 			}
 
 		// handle container exit status
 		case exitStatus := <-statusChannel:
-			stream.Send(&v1.RunResponseMessage{
+			if err := stream.Send(&v1.RunResponseMessage{
 				RequestId: requestID.String(),
 				Level:     v1.MessageLevel_EXIT_CODE,
-				Message:   fmt.Sprintf("Container has exited with code %d", exitStatus.StatusCode),
-			})
+				Payload:   &v1.RunResponseMessage_ExitCode{ExitCode: exitStatus.StatusCode},
+			}); err != nil {
+				log.Error().Str("requestID", requestID.String()).
+					Err(err).
+					Msg("failed to send exit code to the stream")
+				return err
+			}
 			statusChannel = nil
 			errorChannel = nil
 		}
