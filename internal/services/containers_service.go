@@ -101,9 +101,10 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 					{Name: "fsize", Soft: 100 * 1024 * 1024, Hard: 100 * 1024 * 1024}, // Limit file size to 100MB
 				},
 			},
-			StorageOpt: map[string]string{
-				"size": "512M",
-			},
+			// TODO: implement flag for this to be turned on and off
+			//StorageOpt: map[string]string{
+			//	"size": "512M",
+			//},
 			// TODO: use "Kata Containers" or "gVisor" for better isolation
 		},
 		Image: technology.GetImage(),
