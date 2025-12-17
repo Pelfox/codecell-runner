@@ -19,15 +19,15 @@ const (
 // AppConfig holds the configuration settings for the application.
 type AppConfig struct {
 	// Addr is the address to start the gRPC server on.
-	Addr string
+	Addr string `mapstructure:"addr"`
 	// Runtime is the container runtime to use.
-	Runtime RuntimeType
+	Runtime RuntimeType `mapstructure:"runtime"`
 	// EnableStorageOpt indicates whether to enable storage optimizations.
-	EnableStorageOpt bool
+	EnableStorageOpt bool `mapstructure:"enable_storage_opt"`
 	// MemoryLimit is the memory limit for containers in bytes.
-	MemoryLimit int64
+	MemoryLimit int64 `mapstructure:"memory_limit"`
 	// CPULimit is the CPU limit for containers in nanos.
-	CPULimit int64
+	CPULimit int64 `mapstructure:"cpu_limit"`
 }
 
 // LoadConfig loads the application configuration from environment variables
