@@ -86,7 +86,7 @@ func (s *RunnerServer) Run(request *v1.RunRequest, stream grpc.ServerStreamingSe
 	}()
 
 	// creating the container for the request
-	containerID, err := s.containersService.CreateContainer(request.Language, request.SourceCode)
+	containerID, err := s.containersService.CreateContainer(requestID.String(), request.Language, request.SourceCode)
 	if err != nil {
 		log.Error().Str("requestID", requestID.String()).
 			Err(err).

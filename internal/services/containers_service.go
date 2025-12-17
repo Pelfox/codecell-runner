@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 
 	"github.com/Pelfox/codecell-runner/internal/executor"
+	"github.com/Pelfox/codecell-runner/pkg"
 	"github.com/docker/go-units"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -20,25 +22,46 @@ var imagesMapping = map[string]executor.Technology{
 // ContainersService provides methods to manage Docker containers for code execution.
 type ContainersService struct {
 	dockerClient *client.Client
+	appConfig    *pkg.AppConfig
 }
 
 // NewContainersService creates a new instance of ContainersService with the given Docker client.
-func NewContainersService(dockerClient *client.Client) *ContainersService {
-	return &ContainersService{dockerClient}
+func NewContainersService(dockerClient *client.Client, appConfig *pkg.AppConfig) *ContainersService {
+	return &ContainersService{dockerClient, appConfig}
 }
 
-// CreateContainer creates a new container for the given language and source code.
+// CreateContainer creates a new container for the given request ID, language and source code.
 // It returns the container ID or an error if the operation fails.
-func (s *ContainersService) CreateContainer(language string, sourceCode string) (string, error) {
+func (s *ContainersService) CreateContainer(
+	requestId string,
+	language string,
+	sourceCode string,
+) (string, error) {
 	technology, ok := imagesMapping[language]
 	if !ok {
 		return "", errors.New("the specified language is not supported")
+	}
+
+	// selecting the runtime based on the application configuration
+	var runtime string
+	switch s.appConfig.Runtime {
+	case pkg.RuntimeTypeDocker:
+		runtime = "runc"
+	case pkg.RuntimeTypeGvisor:
+		runtime = "runsc"
+	default:
+		return "", errors.New("the specified runtime is not supported")
 	}
 
 	initValue := true      // enabling init process in the container
 	pidsLimit := int64(64) // limiting the number of processes to 64
 	containerOptions := client.ContainerCreateOptions{
 		Config: &container.Config{
+			Labels: map[string]string{
+				"codecell.runner":    "true",
+				"codecell.language":  language,
+				"codecell.requestId": requestId,
+			},
 			User:         "runner", // running as non-root
 			AttachStdout: true,
 			AttachStderr: true,
@@ -58,6 +81,7 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 			AttachStdin: true,
 		},
 		HostConfig: &container.HostConfig{
+			Runtime:        runtime,
 			IpcMode:        "none",
 			Init:           &initValue,
 			ReadonlyRootfs: true, // making root filesystem read-only
@@ -92,22 +116,24 @@ func (s *ContainersService) CreateContainer(language string, sourceCode string) 
 				"/proc/sysrq-trigger",
 			},
 			Resources: container.Resources{
-				Memory:     512 * 1024 * 1024, // limit memory to 512MB
-				MemorySwap: 512 * 1024 * 1024, // disable swap
-				NanoCPUs:   1_000_000_000,     // allow only 1 CPU
+				Memory:     s.appConfig.MemoryLimit, // limit memory to config value
+				MemorySwap: s.appConfig.MemoryLimit, // disable swap
+				NanoCPUs:   s.appConfig.CPULimit,    // limit amount of available CPUs
 				PidsLimit:  &pidsLimit,
 				Ulimits: []*units.Ulimit{
 					{Name: "nofile", Soft: 1024, Hard: 1024},
 					{Name: "fsize", Soft: 100 * 1024 * 1024, Hard: 100 * 1024 * 1024}, // Limit file size to 100MB
 				},
 			},
-			// TODO: implement flag for this to be turned on and off
-			//StorageOpt: map[string]string{
-			//	"size": "512M",
-			//},
-			// TODO: use "Kata Containers" or "gVisor" for better isolation
 		},
 		Image: technology.GetImage(),
+	}
+
+	// enabling storage optimizations if configured
+	if s.appConfig.EnableStorageOpt {
+		containerOptions.HostConfig.StorageOpt = map[string]string{
+			"size": "512M",
+		}
 	}
 
 	result, err := s.dockerClient.ContainerCreate(context.Background(), containerOptions)
@@ -190,7 +216,8 @@ func (s *ContainersService) StreamContainerStatistics(
 
 		for {
 			var stats container.StatsResponse
-			if err := decoder.Decode(&stats); err != nil {
+			// we don't care about EOF errors, since they are basically OK for us
+			if err := decoder.Decode(&stats); err != nil && !errors.Is(err, io.EOF) {
 				log.Error().Err(err).Msg("failed to decode stats")
 				return
 			}
