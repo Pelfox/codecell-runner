@@ -1,9 +1,11 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine
+FROM mcr.microsoft.com/dotnet/sdk:10.0.101-alpine3.23
 
 # Disable telemetry & first-time experience
-ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
-ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
-ENV NUGET_XMLDOC_MODE=skip
+ENV DOTNET_EnableDiagnostics=0 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    NUGET_XMLDOC_MODE=skip
 
 # Create runner user
 RUN addgroup -S runner && adduser -S runner -G runner
