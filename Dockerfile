@@ -1,5 +1,5 @@
 # Builder stage
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25.5-alpine3.23 AS builder
 
 ARG PROTOC_GEN_GO_VERSION=1.36.11
 ARG PROTOC_GEN_GO_GRPC_VERSION=1.6.0
